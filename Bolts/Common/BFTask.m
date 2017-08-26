@@ -301,6 +301,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
     dispatch_barrier_sync(_synchronizationQueue, ^{
         if (_completed) {
             rval = NO;
+            return;
         }
         _completed = YES;
         _result = result;
@@ -323,9 +324,10 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
     dispatch_barrier_sync(_synchronizationQueue, ^{
         if (_completed) {
             rval = NO;
+            return;
         }
-        self.completed = YES;
-        self.faulted = YES;
+        _completed = YES;
+        _faulted = YES;
         _error = error;
         rval = YES;
     });
@@ -371,11 +373,12 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 - (BOOL)trySetCancelled {
     __block BOOL rval;
     dispatch_barrier_sync(_synchronizationQueue, ^{
-        if (self.completed) {
+        if (_completed) {
             rval = NO;
+            return;
         }
-        self.completed = YES;
-        self.cancelled = YES;
+        _completed = YES;
+        _cancelled = YES;
         rval = YES;
     });
     [self runContinuations];
@@ -471,15 +474,14 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
         }
     };
 
-    BOOL completed = [self isCompleted];
     dispatch_barrier_sync(_synchronizationQueue, ^{
-        if (!completed) {
+        if (!_completed) {
             [self.callbacks addObject:[^{
                 [executor execute:executionBlock];
             } copy]];
         }
     });
-    if (completed) {
+    if (self.completed) {
         [executor execute:executionBlock];
     }
 
