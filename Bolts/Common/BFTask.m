@@ -490,14 +490,16 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
         }
     };
 
+    __block BOOL completed;
     dispatch_barrier_sync(_synchronizationQueue, ^{
-        if (_state == pending) {
+        completed = _state != pending;
+        if (!completed) {
             [self.callbacks addObject:[^{
                 [executor execute:executionBlock];
             } copy]];
         }
     });
-    if (self.isCompleted) {
+    if (completed) {
         [executor execute:executionBlock];
     }
 
