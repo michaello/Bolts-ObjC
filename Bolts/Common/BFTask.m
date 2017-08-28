@@ -302,7 +302,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
 - (nullable id)result {
     __block id result;
-    dispatch_barrier_sync(_synchronizationQueue, ^{
+    dispatch_sync(_synchronizationQueue, ^{
         result = _result;
     });
     return result;
@@ -327,7 +327,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
 - (nullable NSError *)error {
     __block NSError *error;
-    dispatch_barrier_sync(_synchronizationQueue, ^{
+    dispatch_sync(_synchronizationQueue, ^{
         error = _error;
     });
     return _error;
@@ -371,7 +371,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
 - (BOOL)isCancelled {
     __block BOOL isCancelled;
-    dispatch_barrier_sync(_synchronizationQueue, ^{
+    dispatch_sync(_synchronizationQueue, ^{
         isCancelled = _state == cancelled;
     });
     return isCancelled;
@@ -379,7 +379,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
 - (BOOL)isFaulted {
     __block BOOL faulted;
-    dispatch_barrier_sync(_synchronizationQueue, ^{
+    dispatch_sync(_synchronizationQueue, ^{
         faulted = _state == errored;
     });
     return faulted;
@@ -403,7 +403,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
 - (BOOL)isCompleted {
     __block BOOL completed;
-    dispatch_barrier_sync(_synchronizationQueue, ^{
+    dispatch_sync(_synchronizationQueue, ^{
         completed = _state != pending;
     });
     return completed;
@@ -411,7 +411,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
 - (void)runContinuations {
     __block NSArray* callbacks;
-    dispatch_barrier_sync(_synchronizationQueue, ^{
+    dispatch_sync(_synchronizationQueue, ^{
         [self.condition lock];
         [self.condition broadcast];
         [self.condition unlock];
@@ -491,7 +491,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
     };
 
     __block BOOL completed;
-    dispatch_barrier_sync(_synchronizationQueue, ^{
+    dispatch_sync(_synchronizationQueue, ^{
         completed = _state != pending;
         if (!completed) {
             [self.callbacks addObject:[^{
@@ -572,17 +572,15 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
 - (NSString *)description {
     // Acquire the data from the locked properties
-    __block BOOL isCompleted;
-    __block BOOL isCancelled;
-    __block BOOL isFaulted;
     __block NSString *resultDescription = nil;
-
-    dispatch_barrier_sync(_synchronizationQueue, ^{
-        isCompleted = _state != pending;
-        isCancelled = _state == cancelled;
-        isFaulted = _state == errored;
-        resultDescription = isCompleted ? [NSString stringWithFormat:@" result = %@", _result] : @"";
+    __block BFTaskState state;
+    dispatch_sync(_synchronizationQueue, ^{
+        state = _state;
+        resultDescription = state != pending ? [NSString stringWithFormat:@" result = %@", _result] : @"";
     });
+    BOOL isCompleted = state != pending;
+    BOOL isCancelled = state == cancelled;
+    BOOL isFaulted = state == errored;
 
     // Description string includes status information and, if available, the
     // result since in some ways this is what a promise actually "is".
