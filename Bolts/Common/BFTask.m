@@ -18,10 +18,10 @@
 NS_ASSUME_NONNULL_BEGIN
 
 typedef enum : NSUInteger {
-    pending,
-    succeeded,
-    errored,
-    cancelled
+    BFTaskStatePending,
+    BFTaskStateSucceeded,
+    BFTaskStateErrored,
+    BFTaskStateCancelled
 } BFTaskState;
 
 __attribute__ ((noinline)) void warnBlockingOperationOnMainThread() {
@@ -294,7 +294,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 }
 
 - (void)commonInit {
-    _state = pending;
+    _state = BFTaskStatePending;
     _synchronizationQueue = dispatch_queue_create("com.bolts.task", DISPATCH_QUEUE_CONCURRENT);
 }
 
@@ -311,11 +311,11 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 - (BOOL)trySetResult:(nullable id)result {
     __block BOOL rval;
     dispatch_barrier_sync(_synchronizationQueue, ^{
-        if (_state != pending) {
+        if (_state != BFTaskStatePending) {
             rval = NO;
             return;
         }
-        _state = succeeded;
+        _state = BFTaskStateSucceeded;
         _result = result;
         rval = YES;
     });
@@ -336,11 +336,11 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 - (BOOL)trySetError:(NSError *)error {
     __block BOOL rval;
     dispatch_barrier_sync(_synchronizationQueue, ^{
-        if (_state != pending) {
+        if (_state != BFTaskStatePending) {
             rval = NO;
             return;
         }
-        _state = errored;
+        _state = BFTaskStateErrored;
         _error = error;
         rval = YES;
     });
@@ -372,7 +372,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 - (BOOL)isCancelled {
     __block BOOL isCancelled;
     dispatch_sync(_synchronizationQueue, ^{
-        isCancelled = _state == cancelled;
+        isCancelled = _state == BFTaskStateCancelled;
     });
     return isCancelled;
 }
@@ -380,7 +380,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 - (BOOL)isFaulted {
     __block BOOL faulted;
     dispatch_sync(_synchronizationQueue, ^{
-        faulted = _state == errored;
+        faulted = _state == BFTaskStateErrored;
     });
     return faulted;
 }
@@ -388,11 +388,11 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 - (BOOL)trySetCancelled {
     __block BOOL rval;
     dispatch_barrier_sync(_synchronizationQueue, ^{
-        if (_state != pending) {
+        if (_state != BFTaskStatePending) {
             rval = NO;
             return;
         }
-        _state = cancelled;
+        _state = BFTaskStateCancelled;
         rval = YES;
     });
     if (rval) {
@@ -404,7 +404,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 - (BOOL)isCompleted {
     __block BOOL completed;
     dispatch_sync(_synchronizationQueue, ^{
-        completed = _state != pending;
+        completed = _state != BFTaskStatePending;
     });
     return completed;
 }
@@ -492,7 +492,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 
     __block BOOL completed;
     dispatch_sync(_synchronizationQueue, ^{
-        completed = _state != pending;
+        completed = _state != BFTaskStatePending;
         if (!completed) {
             [self.callbacks addObject:[^{
                 [executor execute:executionBlock];
@@ -576,11 +576,11 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
     __block BFTaskState state;
     dispatch_sync(_synchronizationQueue, ^{
         state = _state;
-        resultDescription = state != pending ? [NSString stringWithFormat:@" result = %@", _result] : @"";
+        resultDescription = state != BFTaskStatePending ? [NSString stringWithFormat:@" result = %@", _result] : @"";
     });
-    BOOL isCompleted = state != pending;
-    BOOL isCancelled = state == cancelled;
-    BOOL isFaulted = state == errored;
+    BOOL isCompleted = state != BFTaskStatePending;
+    BOOL isCancelled = state == BFTaskStateCancelled;
+    BOOL isFaulted = state == BFTaskStateErrored;
 
     // Description string includes status information and, if available, the
     // result since in some ways this is what a promise actually "is".
