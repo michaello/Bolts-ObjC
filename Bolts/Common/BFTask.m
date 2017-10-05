@@ -88,6 +88,7 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
     self = [super init];
     if (!self) return self;
 
+    [self commonInit];
     [self trySetException:exception];
 
     return self;
@@ -351,22 +352,28 @@ NSString *const BFTaskMultipleExceptionsUserInfoKey = @"exceptions";
 }
 
 - (nullable NSException *)exception {
-    @synchronized(self.lock) {
-        return _exception;
-    }
+    __block NSException *exception;
+    dispatch_sync(_synchronizationQueue, ^{
+        exception = _exception;
+    });
+    return _exception;
 }
 
 - (BOOL)trySetException:(NSException *)exception {
-    @synchronized(self.lock) {
-        if (self.completed) {
-            return NO;
+    __block BOOL rval;
+    dispatch_barrier_sync(_synchronizationQueue, ^{
+        if (_state != BFTaskStatePending) {
+            rval = NO;
+            return;
         }
-        self.completed = YES;
-        self.faulted = YES;
+        _state = BFTaskStateErrored;
         _exception = exception;
+        rval = YES;
+    });
+    if (rval) {
         [self runContinuations];
-        return YES;
     }
+    return rval;
 }
 
 - (BOOL)isCancelled {
