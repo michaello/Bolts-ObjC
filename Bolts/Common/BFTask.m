@@ -16,6 +16,13 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef enum : NSUInteger {
+    BFTaskStatePending,
+    BFTaskStateSucceeded,
+    BFTaskStateErrored,
+    BFTaskStateCancelled
+} BFTaskState;
+
 __attribute__ ((noinline)) void warnBlockingOperationOnMainThread() {
     NSLog(@"Warning: A long-running operation is being executed on the main thread. \n"
           " Break on warnBlockingOperationOnMainThread() to debug.");
@@ -29,15 +36,12 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
 @interface BFTask () {
     id _result;
     NSError *_error;
+    BFTaskState _state;
 }
 
-@property (nonatomic, assign, readwrite, getter=isCancelled) BOOL cancelled;
-@property (nonatomic, assign, readwrite, getter=isFaulted) BOOL faulted;
-@property (nonatomic, assign, readwrite, getter=isCompleted) BOOL completed;
-
-@property (nonatomic, strong) NSObject *lock;
 @property (nonatomic, strong) NSCondition *condition;
 @property (nonatomic, strong) NSMutableArray *callbacks;
+@property (nonatomic, strong) dispatch_queue_t synchronizationQueue;
 
 @end
 
@@ -49,9 +53,9 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     self = [super init];
     if (!self) return self;
 
-    _lock = [[NSObject alloc] init];
     _condition = [[NSCondition alloc] init];
     _callbacks = [NSMutableArray array];
+    [self commonInit];
 
     return self;
 }
@@ -60,6 +64,7 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     self = [super init];
     if (!self) return self;
 
+    [self commonInit];
     [self trySetResult:result];
 
     return self;
@@ -69,6 +74,7 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     self = [super init];
     if (!self) return self;
 
+    [self commonInit];
     [self trySetError:error];
 
     return self;
@@ -78,6 +84,7 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     self = [super init];
     if (!self) return self;
 
+    [self commonInit];
     [self trySetCancelled];
 
     return self;
@@ -114,7 +121,7 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
                 @synchronized (lock) {
                     [errors addObject:t.error];
                 }
-            } else if (t.cancelled) {
+            } else if (t.isCancelled) {
                 OSAtomicIncrement32Barrier(&cancelled);
             }
 
@@ -152,13 +159,13 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     if (total == 0) {
         return [self taskWithResult:nil];
     }
-    
+
     __block int completed = 0;
     __block int32_t cancelled = 0;
-    
+
     NSObject *lock = [NSObject new];
     NSMutableArray<NSError *> *errors = [NSMutableArray new];
-    
+
     BFTaskCompletionSource *source = [BFTaskCompletionSource taskCompletionSource];
     for (BFTask *task in tasks) {
         [task continueWithBlock:^id(BFTask *t) {
@@ -166,14 +173,14 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
                 @synchronized(lock) {
                     [errors addObject:t.error];
                 }
-            } else if (t.cancelled) {
+            } else if (t.isCancelled) {
                 OSAtomicIncrement32Barrier(&cancelled);
             } else {
                 if(OSAtomicCompareAndSwap32Barrier(0, 1, &completed)) {
                     [source setResult:t.result];
                 }
             }
-            
+
             if (OSAtomicDecrement32Barrier(&total) == 0 &&
                 OSAtomicCompareAndSwap32Barrier(0, 1, &completed)) {
                 if (cancelled > 0) {
@@ -229,84 +236,114 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     }];
 }
 
+- (void)commonInit {
+    _state = BFTaskStatePending;
+    _synchronizationQueue = dispatch_queue_create("com.bolts.task", DISPATCH_QUEUE_CONCURRENT);
+}
+
 #pragma mark - Custom Setters/Getters
 
 - (nullable id)result {
-    @synchronized(self.lock) {
-        return _result;
-    }
+    __block id result;
+    dispatch_sync(_synchronizationQueue, ^{
+        result = self->_result;
+    });
+    return result;
 }
 
 - (BOOL)trySetResult:(nullable id)result {
-    @synchronized(self.lock) {
-        if (self.completed) {
-            return NO;
+    __block BOOL rval;
+    dispatch_barrier_sync(_synchronizationQueue, ^{
+        if (self->_state != BFTaskStatePending) {
+            rval = NO;
+            return;
         }
-        self.completed = YES;
-        _result = result;
+        self->_state = BFTaskStateSucceeded;
+        self->_result = result;
+        rval = YES;
+    });
+    if (rval) {
         [self runContinuations];
-        return YES;
     }
+    return rval;
 }
 
 - (nullable NSError *)error {
-    @synchronized(self.lock) {
-        return _error;
-    }
+    __block NSError *error;
+    dispatch_sync(_synchronizationQueue, ^{
+        error = self->_error;
+    });
+    return _error;
 }
 
 - (BOOL)trySetError:(NSError *)error {
-    @synchronized(self.lock) {
-        if (self.completed) {
-            return NO;
+    __block BOOL rval;
+    dispatch_barrier_sync(_synchronizationQueue, ^{
+        if (self->_state != BFTaskStatePending) {
+            rval = NO;
+            return;
         }
-        self.completed = YES;
-        self.faulted = YES;
-        _error = error;
+        self->_state = BFTaskStateErrored;
+        self->_error = error;
+        rval = YES;
+    });
+    if (rval) {
         [self runContinuations];
-        return YES;
     }
+    return rval;
 }
 
 - (BOOL)isCancelled {
-    @synchronized(self.lock) {
-        return _cancelled;
-    }
+    __block BOOL isCancelled;
+    dispatch_sync(_synchronizationQueue, ^{
+        isCancelled = self->_state == BFTaskStateCancelled;
+    });
+    return isCancelled;
 }
 
 - (BOOL)isFaulted {
-    @synchronized(self.lock) {
-        return _faulted;
-    }
+    __block BOOL faulted;
+    dispatch_sync(_synchronizationQueue, ^{
+        faulted = self->_state == BFTaskStateErrored;
+    });
+    return faulted;
 }
 
 - (BOOL)trySetCancelled {
-    @synchronized(self.lock) {
-        if (self.completed) {
-            return NO;
+    __block BOOL rval;
+    dispatch_barrier_sync(_synchronizationQueue, ^{
+        if (self->_state != BFTaskStatePending) {
+            rval = NO;
+            return;
         }
-        self.completed = YES;
-        self.cancelled = YES;
+        self->_state = BFTaskStateCancelled;
+        rval = YES;
+    });
+    if (rval) {
         [self runContinuations];
-        return YES;
     }
+    return rval;
 }
 
 - (BOOL)isCompleted {
-    @synchronized(self.lock) {
-        return _completed;
-    }
+    __block BOOL completed;
+    dispatch_sync(_synchronizationQueue, ^{
+        completed = self->_state != BFTaskStatePending;
+    });
+    return completed;
 }
 
 - (void)runContinuations {
-    @synchronized(self.lock) {
+    __block NSArray* callbacks;
+    dispatch_sync(_synchronizationQueue, ^{
         [self.condition lock];
         [self.condition broadcast];
         [self.condition unlock];
-        for (void (^callback)(void) in self.callbacks) {
-            callback();
-        }
+        callbacks = [NSArray arrayWithArray:self.callbacks];
         [self.callbacks removeAllObjects];
+    });
+    for (void (^callback)(void) in callbacks) {
+        callback();
     }
 }
 
@@ -332,7 +369,7 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
         if ([result isKindOfClass:[BFTask class]]) {
 
             id (^setupWithTask) (BFTask *) = ^id(BFTask *task) {
-                if (cancellationToken.cancellationRequested || task.cancelled) {
+                if (cancellationToken.cancellationRequested || task.isCancelled) {
                     [tcs cancel];
                 } else if (task.error) {
                     tcs.error = task.error;
@@ -344,7 +381,7 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
 
             BFTask *resultTask = (BFTask *)result;
 
-            if (resultTask.completed) {
+            if (resultTask.isCompleted) {
                 setupWithTask(resultTask);
             } else {
                 [resultTask continueWithBlock:setupWithTask];
@@ -355,15 +392,15 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
         }
     };
 
-    BOOL completed;
-    @synchronized(self.lock) {
-        completed = self.completed;
+    __block BOOL completed;
+    dispatch_sync(_synchronizationQueue, ^{
+        completed = self->_state != BFTaskStatePending;
         if (!completed) {
             [self.callbacks addObject:[^{
                 [executor execute:executionBlock];
             } copy]];
         }
-    }
+    });
     if (completed) {
         [executor execute:executionBlock];
     }
@@ -392,7 +429,7 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     }
 
     return [self continueWithExecutor:executor block:^id(BFTask *task) {
-        if (task.faulted || task.cancelled) {
+        if (task.isFaulted || task.isCancelled) {
             return task;
         } else {
             return block(task);
@@ -418,16 +455,17 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
     if ([NSThread isMainThread]) {
         [self warnOperationOnMainThread];
     }
-
-    @synchronized(self.lock) {
-        if (self.completed) {
-            return;
+    __block BOOL completed;
+    dispatch_sync(_synchronizationQueue, ^{
+        completed = self->_state != BFTaskStatePending;
+        if (!completed) {
+            [self.condition lock];
         }
-        [self.condition lock];
+    });
+    if (completed) {
+        return;
     }
-    // TODO: (nlutsenko) Restructure this to use Bolts-Swift thread access synchronization architecture
-    // In the meantime, it's absolutely safe to get `_completed` aka an ivar, as long as it's a `BOOL` aka less than word size.
-    while (!_completed) {
+    while (!self.isCompleted) {
         [self.condition wait];
     }
     [self.condition unlock];
@@ -437,26 +475,24 @@ NSString *const BFTaskMultipleErrorsUserInfoKey = @"errors";
 
 - (NSString *)description {
     // Acquire the data from the locked properties
-    BOOL completed;
-    BOOL cancelled;
-    BOOL faulted;
-    NSString *resultDescription = nil;
-
-    @synchronized(self.lock) {
-        completed = self.completed;
-        cancelled = self.cancelled;
-        faulted = self.faulted;
-        resultDescription = completed ? [NSString stringWithFormat:@" result = %@", self.result] : @"";
-    }
+    __block NSString *resultDescription = nil;
+    __block BFTaskState state;
+    dispatch_sync(_synchronizationQueue, ^{
+        state = self->_state;
+        resultDescription = state != BFTaskStatePending ? [NSString stringWithFormat:@" result = %@", self->_result] : @"";
+    });
+    BOOL isCompleted = state != BFTaskStatePending;
+    BOOL isCancelled = state == BFTaskStateCancelled;
+    BOOL isFaulted = state == BFTaskStateErrored;
 
     // Description string includes status information and, if available, the
     // result since in some ways this is what a promise actually "is".
     return [NSString stringWithFormat:@"<%@: %p; completed = %@; cancelled = %@; faulted = %@;%@>",
             NSStringFromClass([self class]),
             self,
-            completed ? @"YES" : @"NO",
-            cancelled ? @"YES" : @"NO",
-            faulted ? @"YES" : @"NO",
+            isCompleted ? @"YES" : @"NO",
+            isCancelled ? @"YES" : @"NO",
+            isFaulted ? @"YES" : @"NO",
             resultDescription];
 }
 
