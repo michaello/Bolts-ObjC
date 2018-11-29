@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.homepage     = 'https://github.com/BoltsFramework'
   s.authors      = { 'Nikita Lutsenko' => 'nlutsenko@me.com' }
   s.license      = 'BSD'
-  s.source       = { :git => 'https://github.com/BoltsFramework/Bolts-ObjC.git', :tag => s.version.to_s }
+  s.source       = { :git => 'https://github.com/michaello/Bolts-ObjC.git', :tag => s.version.to_s }
   s.social_media_url = 'https://twitter.com/ParseIt'
   s.requires_arc = true
 
